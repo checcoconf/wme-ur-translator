@@ -1,0 +1,92 @@
+# Pubblicazione automatica di WME UR Translator.
+#
+# Il versionamento e' MANUALE: la versione la decidi tu nella riga "// @version" dello script.
+# A ogni push su main che tocca lo script la Action legge quella riga: se il numero non e' mai
+# stato rilasciato pubblica la release v<versione>, altrimenti non fa nulla.
+
+name: Release userscript
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'wme-ur-translator.user.js'
+  workflow_dispatch:
+
+permissions:
+  contents: write   # serve per creare tag e release
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout con tutti i tag
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Leggi la versione dalla riga @version
+        id: ver
+        run: |
+          V=$(grep -m1 -E "^// @version" wme-ur-translator.user.js | sed -E "s|^// @version[[:space:]]+||" | tr -d "[:space:]")
+          if [ -z "$V" ]; then echo "::error::riga @version non trovata nello script"; exit 1; fi
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "Versione nello script: $V"
+
+      - name: La versione e' gia' stata rilasciata?
+        id: chk
+        run: |
+          if git rev-parse -q --verify "refs/tags/v${{ steps.ver.outputs.version }}" >/dev/null; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "Il tag v${{ steps.ver.outputs.version }} esiste gia': nessuna release. Alza @version per pubblicare."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Verifica la sintassi
+        if: steps.chk.outputs.exists == 'false'
+        run: node --check wme-ur-translator.user.js
+
+      - name: Il sorgente deve restare ASCII
+        if: steps.chk.outputs.exists == 'false'
+        run: |
+          if LC_ALL=C grep -qP "[^\x00-\x7F]" wme-ur-translator.user.js; then
+            echo "::error::trovati caratteri non ASCII: scrivi gli accenti come \\uXXXX"
+            LC_ALL=C grep -nP "[^\x00-\x7F]" wme-ur-translator.user.js | head -5
+            exit 1
+          fi
+
+      - name: Genera il .meta.js per gli aggiornamenti di Tampermonkey
+        if: steps.chk.outputs.exists == 'false'
+        run: awk '/==UserScript==/,/==\/UserScript==/' wme-ur-translator.user.js > wme-ur-translator.meta.js
+
+      - name: Prepara le note dal CHANGELOG
+        if: steps.chk.outputs.exists == 'false'
+        run: |
+          V="${{ steps.ver.outputs.version }}"
+          # il file puo' chiamarsi CHANGELOG.md o Changelog.md: su Linux il nome conta
+          CL=$(find . -maxdepth 1 -type f -iname 'changelog.md' | head -n1)
+          if [ -n "$CL" ]; then
+            awk -v v="$V" '
+              index($0, "## [" v "]") == 1 { dentro = 1; next }
+              dentro && /^## \[/ { exit }
+              dentro { print }
+            ' "$CL" > note.md
+          fi
+          if [ ! -s note.md ]; then
+            echo "WME UR Translator $V." > note.md
+          fi
+          printf '\n---\n**Installa o aggiorna:** [wme-ur-translator.user.js](https://github.com/%s/releases/download/v%s/wme-ur-translator.user.js)\n' \
+            "${{ github.repository }}" "$V" >> note.md
+          cat note.md
+
+      - name: Pubblica la release
+        if: steps.chk.outputs.exists == 'false'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.ver.outputs.version }}
+          name: v${{ steps.ver.outputs.version }}
+          body_path: note.md
+          files: |
+            wme-ur-translator.user.js
+            wme-ur-translator.meta.js

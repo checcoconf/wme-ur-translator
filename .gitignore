@@ -1,0 +1,10 @@
+# generato dalla Action a ogni release: non va nel repo
+*.meta.js
+
+# sistema
+.DS_Store
+Thumbs.db
+
+# eventuali prove in locale
+node_modules/
+*.log
